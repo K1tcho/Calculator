@@ -1,4 +1,4 @@
-
+package com.example.calculator
 
 // MainActivity.kt
 import android.content.Context
@@ -62,19 +62,21 @@ import kotlin.math.tan
 val Context.dataStore by preferencesDataStore(name = "settings")
 
 @Composable
-fun rememberAppSettings(): State<AppSettings> {
+fun rememberAppSettings(): MutableState<AppSettings> {
     val context = LocalContext.current
-    val darkTheme = runBlocking {
-        context.dataStore.data.map { prefs ->
-            prefs[booleanPreferencesKey("dark_theme")] ?: true
-        }.first()
+
+    // Use LaunchedEffect to avoid blocking operations in Compose
+    val appSettingsState = remember { mutableStateOf(AppSettings(true, 0)) }
+
+    LaunchedEffect(Unit) {
+        context.dataStore.data.collect { prefs ->
+            val darkTheme = prefs[booleanPreferencesKey("dark_theme")] ?: true
+            val themeColor = prefs[intPreferencesKey("theme_color")] ?: 0
+            appSettingsState.value = AppSettings(darkTheme, themeColor)
+        }
     }
-    val themeColor = runBlocking {
-        context.dataStore.data.map { prefs ->
-            prefs[intPreferencesKey("theme_color")] ?: 0
-        }.first()
-    }
-    return remember { mutableStateOf(AppSettings(darkTheme, themeColor)) }
+
+    return appSettingsState
 }
 
 data class AppSettings(
@@ -164,7 +166,7 @@ fun QuantumCalcTheme(
 }
 
 @Composable
-fun AppNavigation(appSettings: State<AppSettings>) {
+fun AppNavigation(appSettings: MutableState<AppSettings>) {
     val navController = rememberNavController()
     val viewModel: CalculatorViewModel = viewModel()
 
@@ -208,6 +210,7 @@ class CalculatorViewModel : androidx.lifecycle.ViewModel() {
             performOperation(displayValue.toDoubleOrNull() ?: 0.0, currentOperation!!)
         }
         currentOperation = operation
+        lastButtonWasOperation = true
     }
 
     fun performOperation(value: Double, operation: Char) {
@@ -215,17 +218,28 @@ class CalculatorViewModel : androidx.lifecycle.ViewModel() {
             '+' -> storedValue += value
             '-' -> storedValue -= value
             '*' -> storedValue *= value
-            '/' -> storedValue /= value
-            '%' -> storedValue %= value
+            '/' -> if (value != 0.0) storedValue /= value
+            '%' -> if (value != 0.0) storedValue %= value
         }
     }
 
     fun calculateResult() {
         if (currentOperation != null) {
-            performOperation(displayValue.toDoubleOrNull() ?: 0.0, currentOperation!!)
-            displayValue = storedValue.toString()
-            calculationHistory.add("$storedValue $currentOperation $displayValue = $displayValue")
+            val currentValue = displayValue.toDoubleOrNull() ?: 0.0
+            val originalStored = storedValue
+            performOperation(currentValue, currentOperation!!)
+            displayValue = formatResult(storedValue)
+            calculationHistory.add("$originalStored ${currentOperation} $currentValue = ${formatResult(storedValue)}")
             currentOperation = null
+            lastButtonWasOperation = false
+        }
+    }
+
+    fun formatResult(value: Double): String {
+        return if (value == value.toInt().toDouble()) {
+            value.toInt().toString()
+        } else {
+            String.format("%.8f", value).trimEnd('0').trimEnd('.')
         }
     }
 
@@ -250,16 +264,16 @@ class CalculatorViewModel : androidx.lifecycle.ViewModel() {
             "sin" -> sin(value * (PI / 180))
             "cos" -> cos(value * (PI / 180))
             "tan" -> tan(value * (PI / 180))
-            "log" -> log10(value)
-            "ln" -> ln(value)
-            "sqrt" -> sqrt(value)
+            "log" -> if (value > 0) log10(value) else Double.NaN
+            "ln" -> if (value > 0) ln(value) else Double.NaN
+            "sqrt" -> if (value >= 0) sqrt(value) else Double.NaN
             "pow" -> value * value
             "pi" -> PI
             "e" -> kotlin.math.exp(1.0)
             else -> value
         }
-        displayValue = result.toString()
-        calculationHistory.add("$operation($value) = $result")
+        displayValue = formatResult(result)
+        calculationHistory.add("$operation($value) = ${formatResult(result)}")
     }
 }
 
@@ -267,8 +281,8 @@ class CalculatorViewModel : androidx.lifecycle.ViewModel() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CalculatorScreen(navController: NavHostController, viewModel: CalculatorViewModel) {
-    val displayValue by viewModel.displayValue
-    val isScientificMode by viewModel.isScientificMode
+    val displayValue by remember { derivedStateOf { viewModel.displayValue } }
+    val isScientificMode by remember { derivedStateOf { viewModel.isScientificMode } }
 
     val buttonColors = ButtonDefaults.buttonColors(
         containerColor = Color.Transparent,
@@ -428,11 +442,9 @@ fun CalculatorScreen(navController: NavHostController, viewModel: CalculatorView
                     CalcButton("⌫", buttonColors) { viewModel.backspace() }
                     CalcButton("%", buttonColors) {
                         viewModel.setOperation('%')
-                        viewModel.lastButtonWasOperation = true
                     }
                     CalcButton("÷", buttonColors) {
                         viewModel.setOperation('/')
-                        viewModel.lastButtonWasOperation = true
                     }
                 }
 
@@ -446,7 +458,6 @@ fun CalculatorScreen(navController: NavHostController, viewModel: CalculatorView
                     CalcButton("9", buttonColors) { viewModel.appendNumber("9") }
                     CalcButton("×", buttonColors) {
                         viewModel.setOperation('*')
-                        viewModel.lastButtonWasOperation = true
                     }
                 }
 
@@ -460,7 +471,6 @@ fun CalculatorScreen(navController: NavHostController, viewModel: CalculatorView
                     CalcButton("6", buttonColors) { viewModel.appendNumber("6") }
                     CalcButton("-", buttonColors) {
                         viewModel.setOperation('-')
-                        viewModel.lastButtonWasOperation = true
                     }
                 }
 
@@ -474,7 +484,6 @@ fun CalculatorScreen(navController: NavHostController, viewModel: CalculatorView
                     CalcButton("3", buttonColors) { viewModel.appendNumber("3") }
                     CalcButton("+", buttonColors) {
                         viewModel.setOperation('+')
-                        viewModel.lastButtonWasOperation = true
                     }
                 }
 
@@ -484,7 +493,9 @@ fun CalculatorScreen(navController: NavHostController, viewModel: CalculatorView
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     CalcButton("±", buttonColors) {
-                        viewModel.displayValue = (viewModel.displayValue.toDoubleOrNull()?.times(-1)?.toString() ?: "0")
+                        viewModel.displayValue = (viewModel.displayValue.toDoubleOrNull()?.times(-1)?.let {
+                            viewModel.formatResult(it)
+                        } ?: "0")
                     }
                     CalcButton("0", buttonColors) { viewModel.appendNumber("0") }
                     CalcButton(".", buttonColors) {
@@ -581,6 +592,7 @@ fun SciButton(
 }
 
 // CONVERTER SCREEN
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConverterScreen(navController: NavHostController, viewModel: CalculatorViewModel) {
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -805,6 +817,7 @@ object CurrencyApi {
             .create(CurrencyApiService::class.java)
     }
 }
+
 
 @Composable
 fun CurrencyConverter() {
